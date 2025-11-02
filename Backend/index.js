@@ -1,147 +1,134 @@
-import express from 'express';
-import cors from 'cors';
+// index.js
+import express from "express";
+import cors from "cors";
+import dotenv from "dotenv";
+import { supabase } from "./supabaseClient.js";
 
-// --- Lógica original (de cart.js, ahora cart.controller.js) ---
+// OJO: en cart.js tus exports se llaman getCartDetail, addOneToCart, setQtyDB, removeFromCartDB, clearCartDB
+// Aquí los importamos con alias para mantener nombres claros en las rutas:
 import {
-  getCartDetail,
-  addOneToCart,
-  setQtyDB,
-  removeFromCartDB,
-  clearCartDB
-} from './cart.js';
+  getCart,
+  addToCart,
+  setQty,
+  removeFromCart,
+  clearCart,
+} from "./cart.js";
 
-// --- Lógica nueva (de cartcontext.js, ahora cart.v2.controller.js) ---
-import {
-  getCartDetails as getCartDetailsV2,
-  addItemToCart as addItemToCartV2,
-  setItemQuantity as setItemQuantityV2,
-  removeItemFromCart as removeItemFromCartV2,
-  clearCart as clearCartV2
-} from './cartContext.js'; 
+dotenv.config();
+
 const app = express();
 const PORT = process.env.PORT || 4000;
 
-// --- Middlewares ---
-app.use(cors());
+/** Wrapper para capturar errores de handlers async en Express 4 */
+const asyncHandler = (fn) => (req, res, next) =>
+  Promise.resolve(fn(req, res, next)).catch(next);
+
+/** CORS (incluye preflight para PATCH/DELETE) */
+app.use(
+  cors({
+    origin: ["http://localhost:5173", "http://localhost:3000"],
+    methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  })
+);
+app.options("*", cors());
+
 app.use(express.json());
 
-// =================================================================
-// --- API v1 - Rutas para la lógica de cart.controller.js ---
-// =================================================================
-
-app.get('/api/cart', async (req, res) => {
-  try {
-    const cartItems = await getCartDetail();
-    res.status(200).json(cartItems);
-  } catch (error) {
-    res.status(500).json({ message: `V1 Error: ${error.message}` });
-  }
+/** Ruta raíz (salud + docs) */
+app.get("/", (_req, res) => {
+  res.json({
+    ok: true,
+    message: "Backend carrito activo",
+    docs: ["/api/cart", "/api/checkout", "/api/products", "/api/products/:id"],
+  });
 });
 
-app.post('/api/cart', async (req, res) => {
-  try {
-    const { id_objeto } = req.body;
-    if (!id_objeto) return res.status(400).json({ message: 'id_objeto es requerido.' });
-    await addOneToCart(id_objeto);
-    res.status(201).json({ message: 'Producto agregado (V1).' });
-  } catch (error) {
-    res.status(500).json({ message: `V1 Error: ${error.message}` });
-  }
+/* ---------------------- API /api/cart (V1) ---------------------- */
+app.get("/api/cart", asyncHandler(getCart)); // lista carrito
+app.post("/api/cart", asyncHandler(addToCart)); // body: { id_objeto }
+app.patch("/api/cart/items/:id", asyncHandler(setQty)); // body: { qty }
+app.delete("/api/cart/items/:id", asyncHandler(removeFromCart));
+app.delete("/api/cart", asyncHandler(clearCart));
+
+/* ---------------------- Checkout (RPC) ---------------------- */
+app.post(
+  "/api/checkout",
+  asyncHandler(async (req, res) => {
+    const { cartId = 1 } = req.body || {};
+    const { data, error } = await supabase.rpc("checkout_carrito", {
+      p_id_car: cartId,
+    });
+    if (error) throw error;
+    res.json({ ok: true, message: data?.message ?? "Compra realizada" });
+  })
+);
+
+/* ---------------------- Productos ---------------------- */
+app.get(
+  "/api/products",
+  asyncHandler(async (req, res) => {
+    const { estado = "disponible" } = req.query;
+
+    const { data, error } = await supabase
+      .from("objetos")
+      .select("id_objeto,titulo,precio,stock,imagen,estado")
+      .eq("estado", estado)
+      .order("id_objeto", { ascending: true });
+
+    if (error) throw error;
+
+    const rows = (data ?? []).map((p) => ({
+      id: p.id_objeto,
+      name: p.titulo,
+      price: Number(p.precio ?? 0),
+      stock: Number(p.stock ?? 0),
+      image: p.imagen || null,
+      estado: p.estado ?? null,
+    }));
+
+    res.json(rows);
+  })
+);
+
+app.get(
+  "/api/products/:id",
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    if (!id) return res.status(400).json({ message: "ID inválido" });
+
+    const { data, error } = await supabase
+      .from("objetos")
+      .select(
+        "id_objeto,titulo,descripcion,precio,stock,imagen,estado"
+      )
+      .eq("id_objeto", id)
+      .maybeSingle();
+
+    if (error) throw error;
+    if (!data) return res.status(404).json({ message: "No encontrado" });
+
+    res.json({
+      id: data.id_objeto,
+      name: data.titulo,
+      descripcion: data.descripcion ?? "",
+      price: Number(data.precio ?? 0),
+      stock: Number(data.stock ?? 0),
+      image: data.imagen || null,
+      estado: data.estado ?? null,
+    });
+  })
+);
+
+/** Middleware de errores (último) */
+app.use((err, req, res, _next) => {
+  console.error("❌ Unhandled error:", err);
+  const msg =
+    typeof err?.message === "string" ? err.message : "Error interno del servidor";
+  res.status(500).json({ ok: false, message: msg });
 });
 
-app.patch('/api/cart/items/:id', async (req, res) => {
-    try {
-        const id_objeto = parseInt(req.params.id, 10);
-        const { qty } = req.body;
-        if (isNaN(id_objeto)) return res.status(400).json({ message: 'ID no válido.' });
-        if (qty === undefined) return res.status(400).json({ message: 'qty es requerido.' });
-        await setQtyDB(id_objeto, qty);
-        res.status(200).json({ message: 'Cantidad actualizada (V1).' });
-    } catch (error) {
-        res.status(500).json({ message: `V1 Error: ${error.message}` });
-    }
-});
-
-app.delete('/api/cart/items/:id', async (req, res) => {
-    try {
-        const id_objeto = parseInt(req.params.id, 10);
-        if (isNaN(id_objeto)) return res.status(400).json({ message: 'ID no válido.' });
-        await removeFromCartDB(id_objeto);
-        res.status(204).send();
-    } catch (error) {
-        res.status(500).json({ message: `V1 Error: ${error.message}` });
-    }
-});
-
-app.delete('/api/cart', async (req, res) => {
-    try {
-        await clearCartDB();
-        res.status(204).send();
-    } catch (error) {
-        res.status(500).json({ message: `V1 Error: ${error.message}` });
-    }
-});
-
-
-// ======================================================================
-// --- API v2 - Rutas para la lógica de cart.v2.controller.js ---
-// ======================================================================
-
-app.get('/api/v2/cart', async (req, res) => {
-  try {
-    const cartItems = await getCartDetailsV2();
-    res.status(200).json(cartItems);
-  } catch (error) {
-    res.status(500).json({ message: `V2 Error: ${error.message}` });
-  }
-});
-
-app.post('/api/v2/cart', async (req, res) => {
-  try {
-    const { productId } = req.body; // Esta lógica espera 'productId'
-    if (!productId) return res.status(400).json({ message: 'productId es requerido.' });
-    await addItemToCartV2(productId);
-    res.status(201).json({ message: 'Producto agregado (V2).' });
-  } catch (error) {
-    res.status(500).json({ message: `V2 Error: ${error.message}` });
-  }
-});
-
-app.patch('/api/v2/cart/items/:id', async (req, res) => {
-    try {
-        const productId = parseInt(req.params.id, 10);
-        const { quantity } = req.body; // Esta lógica espera 'quantity'
-        if (isNaN(productId)) return res.status(400).json({ message: 'ID no válido.' });
-        if (quantity === undefined) return res.status(400).json({ message: 'quantity es requerido.' });
-        await setItemQuantityV2(productId, quantity);
-        res.status(200).json({ message: 'Cantidad actualizada (V2).' });
-    } catch (error) {
-        res.status(500).json({ message: `V2 Error: ${error.message}` });
-    }
-});
-
-app.delete('/api/v2/cart/items/:id', async (req, res) => {
-    try {
-        const productId = parseInt(req.params.id, 10);
-        if (isNaN(productId)) return res.status(400).json({ message: 'ID no válido.' });
-        await removeItemFromCartV2(productId);
-        res.status(204).send();
-    } catch (error) {
-        res.status(500).json({ message: `V2 Error: ${error.message}` });
-    }
-});
-
-app.delete('/api/v2/cart', async (req, res) => {
-    try {
-        await clearCartV2();
-        res.status(204).send();
-    } catch (error) {
-        res.status(500).json({ message: `V2 Error: ${error.message}` });
-    }
-});
-
-
-// --- Iniciar el servidor ---
+/** Arranque */
 app.listen(PORT, () => {
-  console.log(`🚀 Servidor backend corriendo en http://localhost:${PORT}`);
+  console.log(`Servidor corriendo en http://localhost:${PORT}`);
 });
