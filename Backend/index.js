@@ -17,11 +17,11 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 4000;
 
-/** Wrapper para capturar errores de handlers async en Express 4 */
+// Helper para handlers async
 const asyncHandler = (fn) => (req, res, next) =>
   Promise.resolve(fn(req, res, next)).catch(next);
 
-/** CORS + preflight */
+// CORS + JSON
 app.use(
   cors({
     origin: ["http://localhost:5173", "http://localhost:3000"],
@@ -32,7 +32,7 @@ app.use(
 app.options("*", cors());
 app.use(express.json());
 
-/** Ruta raíz */
+// Home
 app.get("/", (_req, res) => {
   res.json({
     ok: true,
@@ -41,7 +41,7 @@ app.get("/", (_req, res) => {
   });
 });
 
-/* --------- API /api/cart (V1) --------- */
+/* --------- API /api/cart --------- */
 app.get("/api/cart", asyncHandler(getCart));
 app.post("/api/cart", asyncHandler(addToCart));
 app.patch("/api/cart/items/:id", asyncHandler(setQty));
@@ -56,8 +56,20 @@ app.post(
     const { data, error } = await supabase.rpc("checkout_carrito", {
       p_id_car: cartId,
     });
-    if (error) throw error;
-    res.json({ ok: true, message: data?.message ?? "Compra realizada" });
+
+    if (error) {
+      // Error real del motor/RPC
+      return res.status(500).json({ ok: false, message: error.message });
+    }
+
+    // data es lo que devuelve la función SQL: { ok, message, total? }
+    const ok = !!data?.ok;
+    const message =
+      data?.message ?? (ok ? "Compra realizada" : "No se pudo completar la compra");
+    const total = typeof data?.total !== "undefined" ? data.total : undefined;
+
+    // 200 si éxito; 400 si validación (stock/estado) falla
+    return res.status(ok ? 200 : 400).json({ ok, message, total });
   })
 );
 
@@ -115,7 +127,7 @@ app.get(
   })
 );
 
-/** Middleware de errores (último) */
+// Middleware de errores
 app.use((err, req, res, _next) => {
   console.error("❌ Unhandled error:", err);
   const msg =
@@ -123,7 +135,6 @@ app.use((err, req, res, _next) => {
   res.status(500).json({ ok: false, message: msg });
 });
 
-/** Arranque */
 app.listen(PORT, () => {
   console.log(`Servidor corriendo en http://localhost:${PORT}`);
 });
