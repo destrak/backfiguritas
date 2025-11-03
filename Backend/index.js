@@ -4,8 +4,6 @@ import cors from "cors";
 import dotenv from "dotenv";
 import { supabase } from "./supabaseClient.js";
 
-// OJO: en cart.js tus exports se llaman getCartDetail, addOneToCart, setQtyDB, removeFromCartDB, clearCartDB
-// Aquí los importamos con alias para mantener nombres claros en las rutas:
 import {
   getCart,
   addToCart,
@@ -23,7 +21,7 @@ const PORT = process.env.PORT || 4000;
 const asyncHandler = (fn) => (req, res, next) =>
   Promise.resolve(fn(req, res, next)).catch(next);
 
-/** CORS (incluye preflight para PATCH/DELETE) */
+/** CORS + preflight */
 app.use(
   cors({
     origin: ["http://localhost:5173", "http://localhost:3000"],
@@ -32,10 +30,9 @@ app.use(
   })
 );
 app.options("*", cors());
-
 app.use(express.json());
 
-/** Ruta raíz (salud + docs) */
+/** Ruta raíz */
 app.get("/", (_req, res) => {
   res.json({
     ok: true,
@@ -44,14 +41,14 @@ app.get("/", (_req, res) => {
   });
 });
 
-/* ---------------------- API /api/cart (V1) ---------------------- */
-app.get("/api/cart", asyncHandler(getCart)); // lista carrito
-app.post("/api/cart", asyncHandler(addToCart)); // body: { id_objeto }
-app.patch("/api/cart/items/:id", asyncHandler(setQty)); // body: { qty }
+/* --------- API /api/cart (V1) --------- */
+app.get("/api/cart", asyncHandler(getCart));
+app.post("/api/cart", asyncHandler(addToCart));
+app.patch("/api/cart/items/:id", asyncHandler(setQty));
 app.delete("/api/cart/items/:id", asyncHandler(removeFromCart));
 app.delete("/api/cart", asyncHandler(clearCart));
 
-/* ---------------------- Checkout (RPC) ---------------------- */
+/* --------- Checkout (RPC) --------- */
 app.post(
   "/api/checkout",
   asyncHandler(async (req, res) => {
@@ -64,7 +61,7 @@ app.post(
   })
 );
 
-/* ---------------------- Productos ---------------------- */
+/* --------- Productos --------- */
 app.get(
   "/api/products",
   asyncHandler(async (req, res) => {
@@ -99,9 +96,7 @@ app.get(
 
     const { data, error } = await supabase
       .from("objetos")
-      .select(
-        "id_objeto,titulo,descripcion,precio,stock,imagen,estado"
-      )
+      .select("id_objeto,titulo,descripcion,precio,stock,imagen,estado")
       .eq("id_objeto", id)
       .maybeSingle();
 
