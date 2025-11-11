@@ -37,7 +37,13 @@ app.get("/", (_req, res) => {
   res.json({
     ok: true,
     message: "Backend carrito activo",
-    docs: ["/api/cart", "/api/checkout", "/api/products", "/api/products/:id"],
+    docs: [
+      "/api/cart",
+      "/api/checkout",
+      "/api/test/checkout",
+      "/api/products",
+      "/api/products/:id",
+    ],
   });
 });
 
@@ -58,17 +64,56 @@ app.post(
     });
 
     if (error) {
-      // Error real del motor/RPC
       return res.status(500).json({ ok: false, message: error.message });
     }
 
-    // data es lo que devuelve la función SQL: { ok, message, total? }
     const ok = !!data?.ok;
     const message =
       data?.message ?? (ok ? "Compra realizada" : "No se pudo completar la compra");
     const total = typeof data?.total !== "undefined" ? data.total : undefined;
 
-    // 200 si éxito; 400 si validación (stock/estado) falla
+    return res.status(ok ? 200 : 400).json({ ok, message, total });
+  })
+);
+
+/* --------- TEST DE CARGA: checkout + reseed --------- */
+/* Requiere tu función SQL:
+create or replace function checkout_then_seed(p_id_car int, p_n_items int default 3)
+returns jsonb
+language plpgsql
+as $$
+declare
+  v_res jsonb;
+begin
+  v_res := checkout_carrito(p_id_car);
+  if (v_res->>'ok')::boolean is true then
+    perform seed_cart(p_id_car, p_n_items);
+  end if;
+  return v_res;
+end;
+$$;
+y una seed_cart(p_id_car, p_n_items) que llene carrito_items con n ítems válidos.
+*/
+app.post(
+  "/api/test/checkout",
+  asyncHandler(async (req, res) => {
+    const { n = 3 } = req.body || {};
+
+    const { data, error } = await supabase.rpc("checkout_then_seed", {
+      p_id_car: 1,
+      p_n_items: Number(n),
+    });
+
+    if (error) {
+      console.error("checkout_then_seed error:", error);
+      return res.status(500).json({ ok: false, message: error.message });
+    }
+
+    const ok = !!data?.ok;
+    const message =
+      data?.message ?? (ok ? "Compra realizada" : "Fallo de stock o validación");
+    const total = typeof data?.total !== "undefined" ? data.total : undefined;
+
     return res.status(ok ? 200 : 400).json({ ok, message, total });
   })
 );
@@ -99,33 +144,6 @@ app.get(
     res.json(rows);
   })
 );
-/* --------- TEST DE CARGA: checkout + reseed --------- */
-app.post(
-  "/api/test/checkout",
-  asyncHandler(async (req, res) => {
-    // Puedes usar n para definir cuántos ítems resembrar (opcional)
-    const { n = 3 } = req.body || {};
-
-    // Llamamos a la función SQL que compra y vuelve a llenar el carrito
-    const { data, error } = await supabase.rpc("checkout_then_seed", {
-      p_id_car: 1,
-      p_n_items: Number(n)
-    });
-
-    if (error) {
-      console.error("checkout_then_seed error:", error);
-      return res.status(500).json({ ok: false, message: error.message });
-    }
-
-    const ok = !!data?.ok;
-    const message = data?.message ?? (ok ? "Compra realizada" : "Fallo de stock o validación");
-    const total = typeof data?.total !== "undefined" ? data.total : undefined;
-
-    // Si ok → código 200, si no → 400
-    return res.status(ok ? 200 : 400).json({ ok, message, total });
-  })
-);
-
 
 app.get(
   "/api/products/:id",
