@@ -1,5 +1,6 @@
 // cart.js — Handlers Express para /api/cart
-import { supabase } from "./supabaseClient.js";
+// 👇 CAMBIO: Importamos nuestro nuevo cliente 'query'
+import { query } from "./postgresClient.js";
 
 const CAR_ID = 1; // Carrito demo global
 
@@ -8,43 +9,31 @@ const CAR_ID = 1; // Carrito demo global
 // ==============================
 export async function getCart(req, res) {
   try {
-    const { data: items, error: errItems } = await supabase
-      .from("carrito_items")
-      .select("id_objeto,cantidad")
-      .eq("id_car", CAR_ID);
+    // 👇 CAMBIO: Hacemos un JOIN simple. No hay duplicados gracias
+    // a tu índice único en la base de datos.
+    const sql = `
+      SELECT 
+        o.id_objeto, 
+        o.titulo, 
+        o.precio, 
+        o.imagen, 
+        ci.cantidad
+      FROM carrito_items ci
+      JOIN objetos o ON ci.id_objeto = o.id_objeto
+      WHERE ci.id_car = $1
+      ORDER BY o.titulo;
+    `;
+    const { rows } = await query(sql, [CAR_ID]);
 
-    if (errItems) throw errItems;
-    if (!items || items.length === 0) return res.json([]);
+    const items = rows.map((p) => ({
+      id: p.id_objeto,
+      name: p.titulo || `Producto ${p.id_objeto}`,
+      price: Number(p.precio ?? 0),
+      qty: Number(p.cantidad ?? 0),
+      image: p.imagen || null,
+    }));
 
-    // Agrupa por producto y suma cantidades (por si existen duplicados)
-    const qtyById = new Map();
-    for (const r of items) {
-      const id = r.id_objeto;
-      const qty = Number(r.cantidad ?? 0);
-      qtyById.set(id, (qtyById.get(id) ?? 0) + qty);
-    }
-
-    const ids = Array.from(qtyById.keys());
-    const { data: prods, error: errProds } = await supabase
-      .from("objetos")
-      .select("id_objeto,titulo,precio,imagen")
-      .in("id_objeto", ids);
-
-    if (errProds) throw errProds;
-
-    const mapProd = new Map((prods ?? []).map((p) => [p.id_objeto, p]));
-    const rows = ids.map((id) => {
-      const p = mapProd.get(id) || {};
-      return {
-        id,
-        name: p.titulo || `Producto ${id}`,
-        price: Number(p.precio ?? 0),
-        qty: qtyById.get(id) ?? 0,
-        image: p.imagen || null,
-      };
-    });
-
-    res.json(rows);
+    res.json(items);
   } catch (err) {
     console.error("getCart error:", err);
     res.status(500).json({ ok: false, message: "Error al listar carrito" });
@@ -57,51 +46,22 @@ export async function getCart(req, res) {
 export async function addToCart(req, res) {
   try {
     const raw = req.body?.id_objeto;
-    const id_objeto = Number.parseInt(
-      String(typeof raw === "object" && raw !== null ? (raw.id ?? raw.value ?? "") : raw),
-      10
-    );
+    const id_objeto = Number.parseInt(String(raw), 10);
+    
     if (!Number.isFinite(id_objeto))
-      return res.status(400).json({ ok: false, message: "id_objeto inválido (debe ser entero)" });
+      return res.status(400).json({ ok: false, message: "id_objeto inválido" });
 
-    // Trae todas las filas (tolerar duplicados)
-    const { data: rows, error: selErr } = await supabase
-      .from("carrito_items")
-      .select("id_item,cantidad")
-      .eq("id_car", CAR_ID)
-      .eq("id_objeto", id_objeto);
-
-    if (selErr) throw selErr;
-
-    if (!rows || rows.length === 0) {
-      // No existe → insertar
-      const { error: insErr } = await supabase
-        .from("carrito_items")
-        .insert([{ id_car: CAR_ID, id_objeto, cantidad: 1 }]);
-      if (insErr) throw insErr;
-      return res.status(201).json({ ok: true });
-    }
-
-    // Consolidar duplicados: dejar 1 fila con cantidad total + 1
-    const totalActual = rows.reduce((s, r) => s + Number(r.cantidad ?? 0), 0);
-    const totalNuevo = totalActual + 1;
-    const keepId = rows[0].id_item;
-    const toDelete = rows.slice(1).map((r) => r.id_item);
-
-    if (toDelete.length > 0) {
-      const { error: delErr } = await supabase
-        .from("carrito_items")
-        .delete()
-        .in("id_item", toDelete);
-      if (delErr) throw delErr;
-    }
-
-    const { error: updErr } = await supabase
-      .from("carrito_items")
-      .update({ cantidad: totalNuevo })
-      .eq("id_item", keepId);
-    if (updErr) throw updErr;
-
+    // 👇 CAMBIO: Lógica súper simple gracias a 'ON CONFLICT'
+    // Intenta insertar 1. Si ya existe (conflicto en id_car, id_objeto),
+    // simplemente actualiza la cantidad sumándole 1.
+    const sql = `
+      INSERT INTO carrito_items (id_car, id_objeto, cantidad)
+      VALUES ($1, $2, 1)
+      ON CONFLICT (id_car, id_objeto) 
+      DO UPDATE SET cantidad = carrito_items.cantidad + 1;
+    `;
+    await query(sql, [CAR_ID, id_objeto]);
+    
     res.status(201).json({ ok: true });
   } catch (err) {
     console.error("addToCart error:", err);
@@ -120,52 +80,20 @@ export async function setQty(req, res) {
     if (!Number.isFinite(id_objeto) || !Number.isFinite(qty) || qty < 0)
       return res.status(400).json({ ok: false, message: "id o qty inválidos" });
 
-    // Trae todas las filas de ese producto
-    const { data: rows, error: selErr } = await supabase
-      .from("carrito_items")
-      .select("id_item,cantidad")
-      .eq("id_car", CAR_ID)
-      .eq("id_objeto", id_objeto);
-    if (selErr) throw selErr;
-
-    // qty = 0 → borra todas las filas
     if (qty === 0) {
-      if (rows?.length) {
-        const ids = rows.map((r) => r.id_item);
-        const { error: delErr } = await supabase
-          .from("carrito_items")
-          .delete()
-          .in("id_item", ids);
-        if (delErr) throw delErr;
-      }
-      return res.json({ ok: true });
+      // Si la cantidad es 0, simplemente lo borramos.
+      return await removeFromCart(req, res);
     }
 
-    if (!rows || rows.length === 0) {
-      // No existe → insertar con la qty pedida
-      const { error: insErr } = await supabase
-        .from("carrito_items")
-        .insert([{ id_car: CAR_ID, id_objeto, cantidad: qty }]);
-      if (insErr) throw insErr;
-      return res.json({ ok: true });
-    }
-
-    // Consolidar duplicados: deja 1 fila y borra el resto
-    const keepId = rows[0].id_item;
-    const toDelete = rows.slice(1).map((r) => r.id_item);
-    if (toDelete.length > 0) {
-      const { error: delErr } = await supabase
-        .from("carrito_items")
-        .delete()
-        .in("id_item", toDelete);
-      if (delErr) throw delErr;
-    }
-
-    const { error: updErr } = await supabase
-      .from("carrito_items")
-      .update({ cantidad: qty })
-      .eq("id_item", keepId);
-    if (updErr) throw updErr;
+    // 👇 CAMBIO: Lógica simple con 'ON CONFLICT'
+    // Intenta insertar la nueva cantidad. Si ya existe, actualízala.
+    const sql = `
+      INSERT INTO carrito_items (id_car, id_objeto, cantidad)
+      VALUES ($1, $2, $3)
+      ON CONFLICT (id_car, id_objeto) 
+      DO UPDATE SET cantidad = $3;
+    `;
+    await query(sql, [CAR_ID, id_objeto, qty]);
 
     res.json({ ok: true });
   } catch (err) {
@@ -183,15 +111,16 @@ export async function removeFromCart(req, res) {
     if (!Number.isFinite(id_objeto))
       return res.status(400).json({ ok: false, message: "id inválido" });
 
-    const { error: delErr } = await supabase
-      .from("carrito_items")
-      .delete()
-      .eq("id_car", CAR_ID)
-      .eq("id_objeto", id_objeto);
-    if (delErr) throw delErr;
+    // 👇 CAMBIO: SQL estándar
+    const sql = `
+      DELETE FROM carrito_items 
+      WHERE id_car = $1 AND id_objeto = $2
+    `;
+    await query(sql, [CAR_ID, id_objeto]);
 
     res.status(204).end();
-  } catch (err) {
+  } catch (err)
+ {
     console.error("removeFromCart error:", err);
     res.status(500).json({ ok: false, message: "Error al eliminar ítem" });
   }
@@ -202,11 +131,9 @@ export async function removeFromCart(req, res) {
 // ==============================
 export async function clearCart(_req, res) {
   try {
-    const { error } = await supabase
-      .from("carrito_items")
-      .delete()
-      .eq("id_car", CAR_ID);
-    if (error) throw error;
+    // 👇 CAMBIO: SQL estándar
+    const sql = `DELETE FROM carrito_items WHERE id_car = $1`;
+    await query(sql, [CAR_ID]);
 
     res.status(204).end();
   } catch (err) {

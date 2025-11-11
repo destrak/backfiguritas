@@ -1,8 +1,7 @@
-// index.js
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
-import { supabase } from "./supabaseClient.js";
+import { query } from "./postgresClient.js"; 
 
 import {
   getCart,
@@ -24,7 +23,8 @@ const asyncHandler = (fn) => (req, res, next) =>
 // CORS + JSON
 app.use(
   cors({
-    origin: ["http://localhost:5173", "http://localhost:3000"],
+    //  NOTA: Tu frontend ahora corre en localhost:5173
+    origin: ["http://localhost:5173", "http://localhost:4000"],
     methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
   })
@@ -36,7 +36,7 @@ app.use(express.json());
 app.get("/", (_req, res) => {
   res.json({
     ok: true,
-    message: "Backend carrito activo",
+    message: "Backend carrito activo (con PostgreSQL directo)",
     docs: [
       "/api/cart",
       "/api/checkout",
@@ -59,14 +59,18 @@ app.post(
   "/api/checkout",
   asyncHandler(async (req, res) => {
     const { cartId = 1 } = req.body || {};
-    const { data, error } = await supabase.rpc("checkout_carrito", {
-      p_id_car: cartId,
-    });
+    
+    //  CAMBIO: Reemplazamos supabase.rpc por pool.query
+    const { rows, error } = await query("SELECT * FROM checkout_carrito($1)", [
+      cartId,
+    ]);
 
     if (error) {
       return res.status(500).json({ ok: false, message: error.message });
     }
 
+    // El resultado de la función SQL está en la primera fila
+    const data = rows[0]?.checkout_carrito;
     const ok = !!data?.ok;
     const message =
       data?.message ?? (ok ? "Compra realizada" : "No se pudo completar la compra");
@@ -77,38 +81,22 @@ app.post(
 );
 
 /* --------- TEST DE CARGA: checkout + reseed --------- */
-/* Requiere tu función SQL:
-create or replace function checkout_then_seed(p_id_car int, p_n_items int default 3)
-returns jsonb
-language plpgsql
-as $$
-declare
-  v_res jsonb;
-begin
-  v_res := checkout_carrito(p_id_car);
-  if (v_res->>'ok')::boolean is true then
-    perform seed_cart(p_id_car, p_n_items);
-  end if;
-  return v_res;
-end;
-$$;
-y una seed_cart(p_id_car, p_n_items) que llene carrito_items con n ítems válidos.
-*/
 app.post(
   "/api/test/checkout",
   asyncHandler(async (req, res) => {
     const { n = 3 } = req.body || {};
 
-    const { data, error } = await supabase.rpc("checkout_then_seed", {
-      p_id_car: 1,
-      p_n_items: Number(n),
-    });
+    const { rows, error } = await query("SELECT * FROM checkout_then_seed($1, $2)", [
+      1,
+      Number(n),
+    ]);
 
     if (error) {
       console.error("checkout_then_seed error:", error);
       return res.status(500).json({ ok: false, message: error.message });
     }
 
+    const data = rows[0]?.checkout_then_seed;
     const ok = !!data?.ok;
     const message =
       data?.message ?? (ok ? "Compra realizada" : "Fallo de stock o validación");
@@ -124,13 +112,14 @@ app.get(
   asyncHandler(async (req, res) => {
     const { estado = "disponible" } = req.query;
 
-    const { data, error } = await supabase
-      .from("objetos")
-      .select("id_objeto,titulo,precio,stock,imagen,estado")
-      .eq("estado", estado)
-      .order("id_objeto", { ascending: true });
-
-    if (error) throw error;
+    //  CAMBIO: Reemplazamos supabase.from por SQL
+    const sql = `
+      SELECT id_objeto, titulo, precio, stock, imagen, estado 
+      FROM objetos 
+      WHERE estado = $1 
+      ORDER BY id_objeto ASC
+    `;
+    const { rows: data } = await query(sql, [estado]);
 
     const rows = (data ?? []).map((p) => ({
       id: p.id_objeto,
@@ -151,13 +140,15 @@ app.get(
     const id = Number(req.params.id);
     if (!id) return res.status(400).json({ message: "ID inválido" });
 
-    const { data, error } = await supabase
-      .from("objetos")
-      .select("id_objeto,titulo,descripcion,precio,stock,imagen,estado")
-      .eq("id_objeto", id)
-      .maybeSingle();
+    //  CAMBIO: Reemplazamos supabase.from por SQL
+    const sql = `
+      SELECT id_objeto, titulo, descripcion, precio, stock, imagen, estado 
+      FROM objetos 
+      WHERE id_objeto = $1
+    `;
+    const { rows } = await query(sql, [id]);
+    const data = rows[0]; // Obtenemos el primer resultado
 
-    if (error) throw error;
     if (!data) return res.status(404).json({ message: "No encontrado" });
 
     res.json({
@@ -174,12 +165,13 @@ app.get(
 
 // Middleware de errores
 app.use((err, req, res, _next) => {
-  console.error("❌ Unhandled error:", err);
+  console.error("Unhandled error:", err);
   const msg =
     typeof err?.message === "string" ? err.message : "Error interno del servidor";
   res.status(500).json({ ok: false, message: msg });
 });
 
 app.listen(PORT, () => {
+  //  CAMBIO: Actualizamos el puerto a 4000 (el que usas en Docker)
   console.log(`Servidor corriendo en http://localhost:${PORT}`);
 });
