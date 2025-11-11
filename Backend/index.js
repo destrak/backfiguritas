@@ -99,6 +99,33 @@ app.get(
     res.json(rows);
   })
 );
+/* --------- TEST DE CARGA: checkout + reseed --------- */
+app.post(
+  "/api/test/checkout",
+  asyncHandler(async (req, res) => {
+    // Puedes usar n para definir cuántos ítems resembrar (opcional)
+    const { n = 3 } = req.body || {};
+
+    // Llamamos a la función SQL que compra y vuelve a llenar el carrito
+    const { data, error } = await supabase.rpc("checkout_then_seed", {
+      p_id_car: 1,
+      p_n_items: Number(n)
+    });
+
+    if (error) {
+      console.error("checkout_then_seed error:", error);
+      return res.status(500).json({ ok: false, message: error.message });
+    }
+
+    const ok = !!data?.ok;
+    const message = data?.message ?? (ok ? "Compra realizada" : "Fallo de stock o validación");
+    const total = typeof data?.total !== "undefined" ? data.total : undefined;
+
+    // Si ok → código 200, si no → 400
+    return res.status(ok ? 200 : 400).json({ ok, message, total });
+  })
+);
+
 
 app.get(
   "/api/products/:id",
