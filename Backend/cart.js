@@ -1,16 +1,16 @@
 // cart.js — Handlers Express para /api/cart
-// 👇 CAMBIO: Importamos nuestro nuevo cliente 'query'
+//  CAMBIO: Importamos nuestro nuevo cliente 'query'
 import { query } from "./postgresClient.js";
 
 const CAR_ID = 1; // Carrito demo global
 
 // ==============================
-// 🛒 GET /api/cart
+//  GET /api/cart
 // ==============================
 export async function getCart(req, res) {
   try {
-    // 👇 CAMBIO: Hacemos un JOIN simple. No hay duplicados gracias
-    // a tu índice único en la base de datos.
+    
+    
     const sql = `
       SELECT 
         o.id_objeto, 
@@ -41,7 +41,7 @@ export async function getCart(req, res) {
 }
 
 // ==============================
-// ➕ POST /api/cart  body: { id_objeto }
+//  POST /api/cart  body: { id_objeto }
 // ==============================
 export async function addToCart(req, res) {
   try {
@@ -51,9 +51,9 @@ export async function addToCart(req, res) {
     if (!Number.isFinite(id_objeto))
       return res.status(400).json({ ok: false, message: "id_objeto inválido" });
 
-    // 👇 CAMBIO: Lógica súper simple gracias a 'ON CONFLICT'
-    // Intenta insertar 1. Si ya existe (conflicto en id_car, id_objeto),
-    // simplemente actualiza la cantidad sumándole 1.
+    
+    
+    
     const sql = `
       INSERT INTO carrito_items (id_car, id_objeto, cantidad)
       VALUES ($1, $2, 1)
@@ -70,7 +70,7 @@ export async function addToCart(req, res) {
 }
 
 // ==============================
-// 🔁 PATCH /api/cart/items/:id  body: { qty }
+//  PATCH /api/cart/items/:id  body: { qty }
 // ==============================
 export async function setQty(req, res) {
   try {
@@ -85,7 +85,7 @@ export async function setQty(req, res) {
       return await removeFromCart(req, res);
     }
 
-    // 👇 CAMBIO: Lógica simple con 'ON CONFLICT'
+    
     // Intenta insertar la nueva cantidad. Si ya existe, actualízala.
     const sql = `
       INSERT INTO carrito_items (id_car, id_objeto, cantidad)
@@ -103,7 +103,7 @@ export async function setQty(req, res) {
 }
 
 // ==============================
-// ❌ DELETE /api/cart/items/:id
+//  DELETE /api/cart/items/:id
 // ==============================
 export async function removeFromCart(req, res) {
   try {
@@ -111,7 +111,7 @@ export async function removeFromCart(req, res) {
     if (!Number.isFinite(id_objeto))
       return res.status(400).json({ ok: false, message: "id inválido" });
 
-    // 👇 CAMBIO: SQL estándar
+    
     const sql = `
       DELETE FROM carrito_items 
       WHERE id_car = $1 AND id_objeto = $2
@@ -127,11 +127,11 @@ export async function removeFromCart(req, res) {
 }
 
 // ==============================
-// 🧹 DELETE /api/cart
+//  DELETE /api/cart
 // ==============================
 export async function clearCart(_req, res) {
   try {
-    // 👇 CAMBIO: SQL estándar
+    //  CAMBIO: SQL estándar
     const sql = `DELETE FROM carrito_items WHERE id_car = $1`;
     await query(sql, [CAR_ID]);
 
